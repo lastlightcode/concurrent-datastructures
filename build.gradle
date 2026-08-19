@@ -1,0 +1,65 @@
+plugins {
+    id 'java'
+    id 'me.champeau.jmh' version '0.7.3'
+}
+
+group = 'org.dips'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(26)
+    }
+}
+
+dependencies {
+    jmh 'org.openjdk.jmh:jmh-core:1.37'
+    jmhAnnotationProcessor 'org.openjdk.jmh:jmh-generator-annprocess:1.37'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.14.4'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test', Test) {
+    useJUnitPlatform()
+
+    maxHeapSize = '1G'
+
+    testLogging {
+        events "passed"
+    }
+}
+
+jmh {
+    warmupIterations   = 3
+    iterations         = 5
+    fork               = 1
+    timeUnit           = 'ms'
+    resultFormat       = 'JSON'
+
+    includes           = ['.*TreiberEliminationStackBenchmark.*']
+
+    threads = (project.findProperty("jmhThreads") ?: "1").toInteger()
+    resultsFile = project.file("${buildDir}/results/jmh/results-${project.findProperty("jmhThreads") ?: "1"}.json")
+
+
+    jvmArgsAppend      = ['--enable-preview']
+}
+
+// Convenience task: run benchmarks then print the result file location
+tasks.register('runBenchmarks') {
+    dependsOn 'jmh'
+    doLast {
+        def results = file("${buildDir}/results/jmh/results.json")
+        if (results.exists()) {
+            println "\n✅ Benchmark complete!"
+            println "📄 Results JSON: ${results.absolutePath}"
+            println "\nCopy the JSON content into the visualiser to see your graph."
+        }
+    }
+}
+
+
