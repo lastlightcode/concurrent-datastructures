@@ -3,7 +3,7 @@ package org.dips.datastructure.queue;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicReference;
 
-public class LockFreeQueue<T> {
+public final class LockFreeQueue<T> implements ConcurrentQueue<T> {
 
   private final AtomicReference<Node<T>> head;
   private final AtomicReference<Node<T>> tail;
