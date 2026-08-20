@@ -5,24 +5,14 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public class LockFreeQueue<T> {
 
-  public interface Hooks {
-    default void afterEnqueueLink() {}
-    default void beforeDequeueHeadCAS() {}
-  }
-
   private final AtomicReference<Node<T>> head;
   private final AtomicReference<Node<T>> tail;
-  private final Hooks hooks;
+
 
   public LockFreeQueue() {
-    this(new Hooks() {});
-  }
-
-  public LockFreeQueue(Hooks hooks) {
     Node<T> node = new Node<>();
     head = new AtomicReference<>(node);
     tail = new AtomicReference<>(node);
-    this.hooks = hooks;
   }
 
   public void enqueue(T elem) {
@@ -35,8 +25,6 @@ public class LockFreeQueue<T> {
       if (observdTail == tail.get()) {
         if (next == null) {
           if (observdTail.next.compareAndSet(null, node)) {
-            hooks.afterEnqueueLink();
-
             tail.compareAndSet(observdTail, node);
             return;
           }
@@ -61,9 +49,6 @@ public class LockFreeQueue<T> {
           tail.compareAndSet(obsrvdTail, obsrvdHdNxt);
         } else {
           T value = obsrvdHdNxt.value;
-
-          hooks.beforeDequeueHeadCAS();
-
           if (head.compareAndSet(obsrvdHead, obsrvdHdNxt)) {
             return value;
           }

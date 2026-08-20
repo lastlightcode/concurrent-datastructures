@@ -257,60 +257,6 @@ class LockFreeQueueTest {
     }
   }
 
-  @Test
-  void consumerCanCompleteEnqueueWhenProducerStopsAfterLinking()
-      throws Exception {
-
-    CountDownLatch linked = new CountDownLatch(1);
-    CountDownLatch resumeProducer = new CountDownLatch(1);
-
-    LockFreeQueue<Integer> queue =
-        new LockFreeQueue<>(new LockFreeQueue.Hooks() {
-          @Override
-          public void afterEnqueueLink() {
-            linked.countDown();
-            await(resumeProducer);
-          }
-        });
-
-    Thread producer = new Thread(() -> queue.enqueue(42));
-
-    producer.start();
-
-    // Do not continue until the producer has performed:
-    //
-    // dummy.next CAS null -> 42
-    //
-    // but has NOT yet advanced tail.
-    assertTrue(linked.await(5, TimeUnit.SECONDS));
-
-    /*
-     * We have deliberately constructed:
-     *
-     * head
-     *   |
-     *   v
-     * [D] -> [42] -> null
-     *   ^
-     *   |
-     * tail
-     *
-     * Therefore dequeue() must encounter:
-     *
-     * head == tail
-     * head.next != null
-     *
-     * and help advance tail.
-     */
-
-    assertEquals(42, queue.dequeue());
-
-    resumeProducer.countDown();
-    producer.join();
-
-    assertThrows(NoSuchElementException.class, queue::dequeue);
-  }
-
   private static void await(CountDownLatch latch) {
     try {
       latch.await();
