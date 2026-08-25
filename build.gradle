@@ -40,7 +40,7 @@ jmh {
     timeUnit           = 'ms'
     resultFormat       = 'JSON'
 
-    includes           = ['.*QueueBenchmark.*']
+    includes           = ['.*QueueBenchmarkTwo.*']
 
     threads = (project.findProperty("jmhThreads") ?: "1").toInteger()
     resultsFile = project.file("${buildDir}/results/jmh/results-${project.findProperty("jmhThreads") ?: "1"}.json")
