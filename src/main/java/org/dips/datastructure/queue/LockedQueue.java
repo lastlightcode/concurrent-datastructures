@@ -35,7 +35,7 @@ public final class LockedQueue<T> implements ConcurrentQueue<T> {
       Node<T> next = head.next;
 
       if (next == null) {
-        throw new NoSuchElementException();
+        return null;
       }
 
       T value = next.value;

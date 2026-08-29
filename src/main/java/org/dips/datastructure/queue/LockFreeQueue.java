@@ -44,7 +44,7 @@ public final class LockFreeQueue<T> implements ConcurrentQueue<T> {
       if (obsrvdHead == head.get()) {
         if (obsrvdHead == obsrvdTail) {
           if (obsrvdHdNxt == null) {
-            throw new NoSuchElementException();
+            return null;
           }
           tail.compareAndSet(obsrvdTail, obsrvdHdNxt);
         } else {

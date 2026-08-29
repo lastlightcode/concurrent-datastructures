@@ -51,15 +51,15 @@ public class QueueBenchmarkTwo {
    */
 
   @Benchmark
-  @Group("lockFree1P4C")
-  @GroupThreads(1)
+  @Group("lockFree4P1C")
+  @GroupThreads(4)
   public void lockFreeProducer(LockFreeState state) {
     state.queue.enqueue(42);
   }
 
   @Benchmark
-  @Group("lockFree1P4C")
-  @GroupThreads(4)
+  @Group("lockFree4P1C")
+  @GroupThreads(1)
   public void lockFreeConsumer(
       LockFreeState state,
       Blackhole blackhole) {
@@ -79,15 +79,15 @@ public class QueueBenchmarkTwo {
    */
 
   @Benchmark
-  @Group("locked1P4C")
-  @GroupThreads(1)
+  @Group("locked4P1C")
+  @GroupThreads(4)
   public void lockedProducer(LockedState state) {
     state.queue.enqueue(42);
   }
 
   @Benchmark
-  @Group("locked1P4C")
-  @GroupThreads(4)
+  @Group("locked4P1C")
+  @GroupThreads(1)
   public void lockedConsumer(
       LockedState state,
       Blackhole blackhole) {

@@ -19,19 +19,15 @@ import java.util.concurrent.TimeUnit;
 @Warmup(iterations = 5, time = 2)
 @Measurement(iterations = 5, time = 3)
 @Fork(3)
-public class QueueBenchmark {
+public class QueueAppendOnlyBenchmark {
 
   @State(Scope.Benchmark)
   public static class LockFreeState {
     ConcurrentQueue<Integer> queue;
 
-    @Setup(Level.Trial)
+    @Setup(Level.Iteration)
     public void setup() {
       queue = new LockFreeQueue<>();
-
-      for (int i = 0; i < 10_000; i++) {
-        queue.enqueue(i);
-      }
     }
   }
 
@@ -39,7 +35,7 @@ public class QueueBenchmark {
   public static class LockedState {
     ConcurrentQueue<Integer> queue;
 
-    @Setup(Level.Trial)
+    @Setup(Level.Iteration)
     public void setup() {
       queue = new LockedQueue<>();
     }
