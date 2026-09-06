@@ -12,7 +12,8 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
   private final EnqueueProbe<T> probe;
 
   public BasketsQueue(int maxRetryAttempts) {
-    this(maxRetryAttempts, new EnqueueProbe<T>() {});
+    this(maxRetryAttempts, new EnqueueProbe<T>() {
+    });
   }
 
   BasketsQueue(int maxRetryAttempts, EnqueueProbe<T> probe) {
@@ -37,6 +38,9 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
       }
 
       if (next == null && !deleted) {
+
+        probe.beforeOrdinaryLink(obsrvdTail, node);
+
         if (obsrvdTail.next.compareAndSet(null, node, false, false)) {
           probe.afterOrdinaryLink(obsrvdTail, node);
           tail.compareAndSet(obsrvdTail, node);
@@ -51,6 +55,8 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
 
           node.next.set(current, false);
 
+          probe.beforeBasketCas(obsrvdTail, current, node);
+
           if (obsrvdTail.next.compareAndSet(current, node, false, false)) {
             return;
           }
@@ -61,6 +67,7 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
         }
 
         node.next.set(null, false);
+        probe.afterBasketRetryExhausted(node);
         continue;
       }
 
@@ -78,6 +85,10 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
 
   public T dequeue() {
     throw new UnsupportedOperationException("Not yet implemented ...");
+  }
+
+  Node<T> tailNode() {
+    return tail.get();
   }
 
   static final class Node<T> {
@@ -118,5 +129,12 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
     default void beforeTailRepair(
         BasketsQueue.Node<T> observedTail) {
     }
+
+    default void beforeOrdinaryLink(
+        BasketsQueue.Node<T> observedTail,
+        BasketsQueue.Node<T> node) {
+    }
+
+    default void afterBasketRetryExhausted(Node<T> node) {}
   }
 }
