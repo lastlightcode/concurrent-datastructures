@@ -1,6 +1,5 @@
-package org.dips.datastructure;
+package org.dips.datastructure.queue;
 
-import org.dips.datastructure.queue.LockFreeQueue;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
