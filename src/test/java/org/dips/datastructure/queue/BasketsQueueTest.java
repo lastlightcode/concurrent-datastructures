@@ -60,4 +60,50 @@ class BasketsQueueTest {
       assertTrue(done.await(10, TimeUnit.SECONDS));
     }
   }
+
+  /**
+   * Freeze the ordinary tail winner before the update
+   */
+  @Test
+  void staleTailIsRepairedPastBasketMembers() throws Exception {
+    var winnerLinked = new CountDownLatch(1);
+    var allowWinnerToContinue = new CountDownLatch(1);
+
+    var queue = new BasketsQueue<Integer>(
+        16,
+        new BasketsQueue.EnqueueProbe<>() {
+          @Override
+          public void afterOrdinaryLink(
+              BasketsQueue.Node<Integer> observedTail,
+              BasketsQueue.Node<Integer> node) {
+
+            if (node.value == 1) {
+              winnerLinked.countDown();
+
+              try {
+                allowWinnerToContinue.await();
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+              }
+            }
+          }
+        });
+
+    var winner = Thread.ofPlatform().start(() -> queue.enqueue(1));
+
+    assertTrue(winnerLinked.await(5, TimeUnit.SECONDS));
+
+    var c = Thread.ofPlatform().start(() -> queue.enqueue(2));
+    var d = Thread.ofPlatform().start(() -> queue.enqueue(3));
+
+    c.join();
+    d.join();
+
+    // Another producer should encounter the stale tail and repair it.
+    var e = Thread.ofPlatform().start(() -> queue.enqueue(4));
+    e.join();
+
+    allowWinnerToContinue.countDown();
+    winner.join();
+  }
 }

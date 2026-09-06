@@ -9,11 +9,18 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
   private final AtomicReference<Node<T>> tail;
   private final int MAX_RETRY_ATTEMPTS;
 
+  private final EnqueueProbe<T> probe;
+
   public BasketsQueue(int maxRetryAttempts) {
+    this(maxRetryAttempts, new EnqueueProbe<T>() {});
+  }
+
+  BasketsQueue(int maxRetryAttempts, EnqueueProbe<T> probe) {
     Node<T> node = new Node<>();
     head = new AtomicReference<>(node);
     tail = new AtomicReference<>(node);
     MAX_RETRY_ATTEMPTS = maxRetryAttempts;
+    this.probe = probe;
   }
 
   public void enqueue(T elem) {
@@ -31,6 +38,7 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
 
       if (next == null && !deleted) {
         if (obsrvdTail.next.compareAndSet(null, node, false, false)) {
+          probe.afterOrdinaryLink(obsrvdTail, node);
           tail.compareAndSet(obsrvdTail, node);
           return;
         }
@@ -83,6 +91,32 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
     public Node(T elem) {
       this.value = elem;
       this.next = new AtomicMarkableReference<>(null, false);
+    }
+  }
+
+  /**
+   * Testing purposes only ...
+   */
+  interface EnqueueProbe<T> {
+
+    default void afterOrdinaryLink(
+        BasketsQueue.Node<T> observedTail,
+        BasketsQueue.Node<T> node) {
+    }
+
+    default void beforeBasketCas(
+        BasketsQueue.Node<T> observedTail,
+        BasketsQueue.Node<T> current,
+        BasketsQueue.Node<T> node) {
+    }
+
+    default void afterBasketCas(
+        BasketsQueue.Node<T> observedTail,
+        BasketsQueue.Node<T> node) {
+    }
+
+    default void beforeTailRepair(
+        BasketsQueue.Node<T> observedTail) {
     }
   }
 }
