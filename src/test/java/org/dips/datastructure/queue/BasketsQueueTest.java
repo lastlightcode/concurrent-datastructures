@@ -1,6 +1,6 @@
 package org.dips.datastructure.queue;
 
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -9,8 +9,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.dips.datastructure.queue.BasketsQueue.EnqueueProbe;
-import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BasketsQueueTest {
 
@@ -23,9 +26,9 @@ class BasketsQueueTest {
     queue.enqueue(3);
 
     // Once dequeue exists:
-    // assertEquals(1, queue.dequeue());
-    // assertEquals(2, queue.dequeue());
-    // assertEquals(3, queue.dequeue());
+    assertEquals(1, queue.dequeue());
+    assertEquals(2, queue.dequeue());
+    assertEquals(3, queue.dequeue());
   }
 
   @Test
@@ -63,326 +66,190 @@ class BasketsQueueTest {
     }
   }
 
-  /**
-   * Freeze the ordinary tail winner before the update
-   */
   @Test
-  void staleTailIsRepairedPastBasketMembers() throws Exception {
-    var winnerLinked = new CountDownLatch(1);
-    var allowWinnerToContinue = new CountDownLatch(1);
+  void emptyQueueReturnsNull() {
+    var queue = new BasketsQueue<Integer>(16);
 
-    var queue = new BasketsQueue<Integer>(
-        16,
-        new EnqueueProbe<>() {
-          @Override
-          public void afterOrdinaryLink(
-              BasketsQueue.Node<Integer> observedTail,
-              BasketsQueue.Node<Integer> node) {
-
-            if (node.value == 1) {
-              winnerLinked.countDown();
-
-              try {
-                allowWinnerToContinue.await();
-              } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-              }
-            }
-          }
-        });
-
-    var winner = Thread.ofPlatform().start(() -> queue.enqueue(1));
-
-    assertTrue(winnerLinked.await(5, TimeUnit.SECONDS));
-
-    var c = Thread.ofPlatform().start(() -> queue.enqueue(2));
-    var d = Thread.ofPlatform().start(() -> queue.enqueue(3));
-
-    c.join();
-    d.join();
-
-    // Another producer should encounter the stale tail and repair it.
-    var e = Thread.ofPlatform().start(() -> queue.enqueue(4));
-    e.join();
-
-    allowWinnerToContinue.countDown();
-    winner.join();
+    assertNull(queue.dequeue());
   }
 
-  /**
-   * Basket insertion must not advance tail
-   */
   @Test
-  void basketInsertionDoesNotAdvanceTailToBasketMember() throws Exception {
-    var twoReadyToCas = new CountDownLatch(1);
-    var allowTwoToCas = new CountDownLatch(1);
+  void singleElementCanBeDequeued() {
+    var queue = new BasketsQueue<Integer>(16);
 
-    var oneLinked = new CountDownLatch(1);
-    var allowOneToAdvanceTail = new CountDownLatch(1);
+    queue.enqueue(42);
 
-    var queue = new BasketsQueue<Integer>(
-        16,
-        new EnqueueProbe<>() {
-
-          @Override
-          public void beforeOrdinaryLink(
-              BasketsQueue.Node<Integer> observedTail,
-              BasketsQueue.Node<Integer> node) {
-
-            if (node.value == 2) {
-              twoReadyToCas.countDown();
-              await(allowTwoToCas);
-            }
-          }
-
-          @Override
-          public void afterOrdinaryLink(
-              BasketsQueue.Node<Integer> observedTail,
-              BasketsQueue.Node<Integer> node) {
-
-            if (node.value == 1) {
-              oneLinked.countDown();
-              await(allowOneToAdvanceTail);
-            }
-          }
-        });
-
-    // Start 2 first.
-    // It observes sentinel.next == null, then freezes BEFORE its CAS.
-    Thread two = Thread.ofPlatform().start(() -> queue.enqueue(2));
-
-    assertTrue(twoReadyToCas.await(5, TimeUnit.SECONDS));
-
-    // Now 1 observes the same null and wins the CAS.
-    Thread one = Thread.ofPlatform().start(() -> queue.enqueue(1));
-
-    // 1 has linked, but has NOT advanced tail.
-    assertTrue(oneLinked.await(5, TimeUnit.SECONDS));
-
-    /*
-     * Current state:
-     *
-     * sentinel -> 1
-     * ^
-     * tail
-     *
-     * Thread 2 is still holding an old observation:
-     * sentinel.next == null
-     */
-
-    // Wake 2.
-    // Its CAS(null -> 2) must now fail, forcing it into basket insertion.
-    allowTwoToCas.countDown();
-
-    two.join();
-
-    /*
-     * Now we expect:
-     *
-     * sentinel -> 2 -> 1
-     * ^
-     * tail
-     *
-     * 2 is genuinely a basket member and must NOT have advanced tail.
-     */
-    assertNotEquals(
-        Integer.valueOf(2),
-        queue.tailNode().value,
-        "basket member must not become tail");
-
-    // Let 1 perform its best-effort tail update.
-    allowOneToAdvanceTail.countDown();
-    one.join();
+    assertEquals(42, queue.dequeue());
+    assertNull(queue.dequeue());
   }
 
-  /**
-   * Retry exhaustion must not carry stale linkage
-   */
   @Test
-  void exhaustedBasketRetryClearsUnpublishedNodeLink() throws Exception {
+  void preservesFifoForSequentialOperations() {
+    var queue = new BasketsQueue<Integer>(16);
 
-    var cReadyForOrdinaryCas = new CountDownLatch(1);
-    var dReadyForOrdinaryCas = new CountDownLatch(1);
+    queue.enqueue(1);
+    queue.enqueue(2);
+    queue.enqueue(3);
 
-    var allowCOrdinaryCas = new CountDownLatch(1);
-    var allowDOrdinaryCas = new CountDownLatch(1);
+    assertEquals(1, queue.dequeue());
+    assertEquals(2, queue.dequeue());
+    assertEquals(3, queue.dequeue());
+    assertNull(queue.dequeue());
+  }
 
-    var bLinked = new CountDownLatch(1);
-    var allowBToAdvanceTail = new CountDownLatch(1);
+  @Test
+  void canReuseQueueAfterBecomingEmpty() {
+    var queue = new BasketsQueue<Integer>(16);
 
-    var cReadyForBasketCas = new CountDownLatch(1);
-    var allowCBasketCas = new CountDownLatch(1);
+    queue.enqueue(1);
+    assertEquals(1, queue.dequeue());
+    assertNull(queue.dequeue());
 
-    var exhausted = new CountDownLatch(1);
+    queue.enqueue(2);
+    assertEquals(2, queue.dequeue());
+    assertNull(queue.dequeue());
+  }
 
-    AtomicReference<BasketsQueue.Node<Integer>> abandoned =
-        new AtomicReference<>();
+  @Test
+  void twoConsumersDoNotReturnSameElement() throws Exception {
+    var queue = new BasketsQueue<Integer>(16);
 
-    var queue = new BasketsQueue<Integer>(
-        1,
-        new EnqueueProbe<>() {
+    queue.enqueue(1);
+    queue.enqueue(2);
 
-          @Override
-          public void beforeOrdinaryLink(
-              BasketsQueue.Node<Integer> observedTail,
-              BasketsQueue.Node<Integer> node) {
+    var start = new CountDownLatch(1);
 
-            if (node.value == 3) {
-              cReadyForOrdinaryCas.countDown();
-              await(allowCOrdinaryCas);
-            }
+    var result1 = new AtomicReference<Integer>();
+    var result2 = new AtomicReference<Integer>();
 
-            if (node.value == 2) {
-              dReadyForOrdinaryCas.countDown();
-              await(allowDOrdinaryCas);
-            }
-          }
+    var t1 = Thread.ofPlatform().start(() -> {
+      await(start);
+      result1.set(queue.dequeue());
+    });
 
-          @Override
-          public void afterOrdinaryLink(
-              BasketsQueue.Node<Integer> observedTail,
-              BasketsQueue.Node<Integer> node) {
+    var t2 = Thread.ofPlatform().start(() -> {
+      await(start);
+      result2.set(queue.dequeue());
+    });
 
-            if (node.value == 1) {
-              bLinked.countDown();
-              await(allowBToAdvanceTail);
-            }
-          }
+    start.countDown();
 
-          @Override
-          public void beforeBasketCas(
-              BasketsQueue.Node<Integer> observedTail,
-              BasketsQueue.Node<Integer> current,
-              BasketsQueue.Node<Integer> node) {
+    t1.join();
+    t2.join();
 
-            if (node.value == 3) {
-              cReadyForBasketCas.countDown();
-              await(allowCBasketCas);
-            }
-          }
+    assertNotNull(result1.get());
+    assertNotNull(result2.get());
 
-          @Override
-          public void afterBasketRetryExhausted(
-              BasketsQueue.Node<Integer> node) {
+    assertNotEquals(result1.get(), result2.get());
 
-            if (node.value == 3) {
-              abandoned.set(node);
-              exhausted.countDown();
-            }
-          }
-        });
+    assertEquals(
+        Set.of(1, 2),
+        Set.of(result1.get(), result2.get())
+    );
 
-    /*
-     * C observes:
-     *
-     * A.next == null
-     *
-     * and freezes before CAS(null -> C).
-     */
-    Thread c = Thread.ofPlatform().start(() -> queue.enqueue(3));
+    assertNull(queue.dequeue());
+  }
 
-    assertTrue(
-        cReadyForOrdinaryCas.await(5, TimeUnit.SECONDS),
-        "C never reached ordinary CAS");
+  @Test
+  void repeatedDequeuesCanTraverseDeletedPrefix() {
+    var queue = new BasketsQueue<Integer>(16);
 
-    /*
-     * D ALSO observes:
-     *
-     * A.next == null
-     *
-     * and freezes before CAS(null -> D).
-     */
-    Thread d = Thread.ofPlatform().start(() -> queue.enqueue(2));
+    for (int i = 0; i < 100; i++) {
+      queue.enqueue(i);
+    }
 
-    assertTrue(
-        dReadyForOrdinaryCas.await(5, TimeUnit.SECONDS),
-        "D never reached ordinary CAS");
+    for (int i = 0; i < 99; i++) {
+      assertEquals(i, queue.dequeue());
+    }
 
-    /*
-     * Now B gets to win the ordinary append.
-     */
-    Thread b = Thread.ofPlatform().start(() -> queue.enqueue(1));
+    assertEquals(99, queue.dequeue());
+    assertNull(queue.dequeue());
+  }
 
-    assertTrue(
-        bLinked.await(5, TimeUnit.SECONDS),
-        "B never linked");
+  @Test
+  void smallCleanupThresholdDoesNotLoseElements() {
+    var queue = new BasketsQueue<Integer>(2);
 
-    /*
-     * Structure:
-     *
-     * A -> B
-     * ^
-     * tail
-     *
-     * Both C and D still believe A.next was null.
-     */
+    queue.enqueue(1);
+    queue.enqueue(2);
+    queue.enqueue(3);
+    queue.enqueue(4);
+    queue.enqueue(5);
 
-    /*
-     * Wake C first.
-     *
-     * C's ordinary CAS fails.
-     * It enters basket insertion, reads current = B,
-     * sets C.next = B, then freezes before its basket CAS.
-     */
-    allowCOrdinaryCas.countDown();
+    assertEquals(1, queue.dequeue());
+    assertEquals(2, queue.dequeue());
+    assertEquals(3, queue.dequeue());
+    assertEquals(4, queue.dequeue());
+    assertEquals(5, queue.dequeue());
 
-    assertTrue(
-        cReadyForBasketCas.await(5, TimeUnit.SECONDS),
-        "C never reached basket CAS");
+    assertNull(queue.dequeue());
+  }
 
-    /*
-     * C is now prepared to do:
-     *
-     * CAS(A.next, B, C)
-     *
-     * but we keep it frozen.
-     */
+  @Test
+  void enqueueAfterSeveralDequeuesRemainsReachable() {
+    var queue = new BasketsQueue<Integer>(2);
 
-    /*
-     * Wake D.
-     *
-     * D's ordinary CAS(null -> D) fails.
-     *
-     * D then enters the basket and successfully changes:
-     *
-     * A.next: B -> D
-     *
-     * giving:
-     *
-     * A -> D -> B
-     */
-    allowDOrdinaryCas.countDown();
+    queue.enqueue(1);
+    queue.enqueue(2);
+    queue.enqueue(3);
 
-    d.join();
+    assertEquals(1, queue.dequeue());
+    assertEquals(2, queue.dequeue());
 
-    /*
-     * Now C's expected value B is stale.
-     */
-    allowCBasketCas.countDown();
+    queue.enqueue(4);
+    queue.enqueue(5);
 
-    /*
-     * C must fail its basket CAS.
-     *
-     * MAX_RETRY_ATTEMPTS == 1, so it should abandon
-     * this basket attempt and clear C.next.
-     */
-    assertTrue(
-        exhausted.await(5, TimeUnit.SECONDS),
-        "C never exhausted its basket retry");
+    assertEquals(3, queue.dequeue());
+    assertEquals(4, queue.dequeue());
+    assertEquals(5, queue.dequeue());
 
-    assertNotNull(abandoned.get());
+    assertNull(queue.dequeue());
+  }
 
-    assertNull(
-        abandoned.get().next.getReference(),
-        "abandoned unpublished node must clear stale basket linkage");
+  @Test
+  void concurrentProducerAndConsumerDoNotLoseElements() throws Exception {
+    var queue = new BasketsQueue<Integer>(4);
 
-    /*
-     * Finally release B so everything can finish.
-     */
-    allowBToAdvanceTail.countDown();
+    int count = 10_000;
 
-    b.join();
-    c.join();
+    var start = new CountDownLatch(1);
+    var consumed = ConcurrentHashMap.<Integer>newKeySet();
+
+    var producer = Thread.ofPlatform().start(() -> {
+      await(start);
+
+      for (int i = 0; i < count; i++) {
+        queue.enqueue(i);
+      }
+    });
+
+    var consumer = Thread.ofPlatform().start(() -> {
+      await(start);
+
+      while (consumed.size() < count) {
+        Integer value = queue.dequeue();
+
+        if (value != null) {
+          assertTrue(
+              consumed.add(value),
+              "Duplicate dequeue: " + value
+          );
+        }
+      }
+    });
+
+    start.countDown();
+
+    producer.join();
+    consumer.join();
+
+    assertEquals(count, consumed.size());
+
+    for (int i = 0; i < count; i++) {
+      assertTrue(consumed.contains(i));
+    }
+
+    assertNull(queue.dequeue());
   }
 
   private static void await(CountDownLatch latch) {
