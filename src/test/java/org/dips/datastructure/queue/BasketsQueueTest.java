@@ -4,10 +4,13 @@ import org.dips.datastructure.queue.BasketsQueue.DequeueProbe;
 import org.dips.datastructure.queue.BasketsQueue.EnqueueProbe;
 import org.dips.datastructure.queue.BasketsQueue.Node;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
@@ -966,6 +969,81 @@ class BasketsQueueTest {
       assertTrue(
           traversed < 1_000_000,
           "Physical chain traversal appears not to terminate"
+      );
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = {0, 1, 2, 4, 8, 16, 32})
+  void everySuccessfulEnqueuePublishesExactlyOneOccurrence(int maxRetryAttempts) throws Exception {
+
+    int producers = 8;
+    int valuesPerProducer = 1_000;
+    int expectedValues = producers * valuesPerProducer;
+
+    var queue = new BasketsQueue<Integer>(
+        1,      // deliberately tiny: force basket fallback aggressively
+        16,
+        new EnqueueProbe<>() {},
+        new DequeueProbe<>() {}
+    );
+
+    var ready = new CountDownLatch(producers);
+    var start = new CountDownLatch(1);
+
+    var threads = new ArrayList<Thread>();
+
+    for (int producer = 0; producer < producers; producer++) {
+      int producerId = producer;
+
+      threads.add(
+          Thread.ofPlatform().start(() -> {
+            ready.countDown();
+            await(start);
+
+            int base = producerId * valuesPerProducer;
+
+            for (int i = 0; i < valuesPerProducer; i++) {
+              queue.enqueue(base + i);
+            }
+          })
+      );
+    }
+
+    assertTrue(
+        ready.await(5, TimeUnit.SECONDS),
+        "All producers should reach the starting gate"
+    );
+
+    start.countDown();
+
+    for (var thread : threads) {
+      thread.join();
+    }
+
+    var seen = new HashSet<Integer>();
+
+    Integer value;
+
+    while ((value = queue.dequeue()) != null) {
+      Integer finalValue = value;
+      assertTrue(
+          seen.add(value),
+          () -> "Duplicate logical occurrence dequeued: " + finalValue
+      );
+    }
+
+    assertEquals(
+        expectedValues,
+        seen.size(),
+        "Every completed enqueue should publish exactly one value"
+    );
+
+    for (int i = 0; i < expectedValues; i++) {
+      int finalI = i;
+      assertTrue(
+          seen.contains(i),
+          () -> "Missing enqueued value: " + finalI
       );
     }
   }
