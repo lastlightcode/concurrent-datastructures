@@ -661,6 +661,148 @@ class BasketsQueueTest {
     assertNull(queue.dequeue());
   }
 
+  @Test
+  void dequeueRemainsCorrectWhileTailIsSeverelyLagging() throws Exception {
+    var published = new CountDownLatch(1);
+    var allowTailAdvance = new CountDownLatch(1);
+
+    EnqueueProbe<Integer> enqueueProbe = new EnqueueProbe<>() {
+      @Override
+      public void afterOrdinaryLink(
+          BasketsQueue.Node<Integer> observedTail,
+          BasketsQueue.Node<Integer> node) {
+
+        published.countDown();
+        await(allowTailAdvance);
+      }
+    };
+
+    var queue = new BasketsQueue<Integer>(
+        16,
+        16,
+        enqueueProbe,
+        new DequeueProbe<>() {}
+    );
+
+    var producer = Thread.ofPlatform().start(() -> {
+      queue.enqueue(1);
+    });
+
+    assertTrue(
+        published.await(5, TimeUnit.SECONDS),
+        "Producer should publish the first node before tail advances"
+    );
+
+    /*
+     * At this point:
+     *
+     * tail -> sentinel
+     *
+     * sentinel -> 1
+     *
+     * So tail is definitely stale.
+     */
+
+    assertEquals(
+        1,
+        queue.dequeue(),
+        "Dequeue must succeed even though tail still points at the sentinel"
+    );
+
+    assertNull(
+        queue.dequeue(),
+        "Queue should be logically empty after removing the only element"
+    );
+
+    allowTailAdvance.countDown();
+    producer.join();
+
+    assertNull(queue.dequeue());
+  }
+
+  @Test
+  void dequeueTraversesCorrectlyWithTailFarBehindPhysicalEnd() throws Exception {
+    var firstPublished = new CountDownLatch(1);
+    var allowFirstTailAdvance = new CountDownLatch(1);
+
+    var helperBeforeRepair = new CountDownLatch(1);
+    var allowHelperRepair = new CountDownLatch(1);
+
+    var ordinaryLinks = new AtomicInteger();
+
+    EnqueueProbe<Integer> enqueueProbe = new EnqueueProbe<>() {
+
+      @Override
+      public void afterOrdinaryLink(
+          BasketsQueue.Node<Integer> observedTail,
+          BasketsQueue.Node<Integer> node) {
+
+        if (ordinaryLinks.incrementAndGet() == 1) {
+          firstPublished.countDown();
+          await(allowFirstTailAdvance);
+        }
+      }
+
+      @Override
+      public void beforeTailRepair(
+          BasketsQueue.Node<Integer> observedTail,
+          BasketsQueue.Node<Integer> candidate) {
+
+        helperBeforeRepair.countDown();
+        await(allowHelperRepair);
+      }
+    };
+
+    var queue = new BasketsQueue<Integer>(
+        16,
+        16,
+        enqueueProbe,
+        new DequeueProbe<>() {}
+    );
+
+    var p1 = Thread.ofPlatform().start(() ->
+        queue.enqueue(1)
+    );
+
+    assertTrue(
+        firstPublished.await(5, TimeUnit.SECONDS),
+        "First producer should publish before advancing tail"
+    );
+
+    var p2 = Thread.ofPlatform().start(() ->
+        queue.enqueue(2)
+    );
+
+    assertTrue(
+        helperBeforeRepair.await(5, TimeUnit.SECONDS),
+        "Second producer should detect and try to repair lagging tail"
+    );
+
+    /*
+     * Right now we have at least:
+     *
+     * tail
+     *  ↓
+     *  S -> 1
+     *
+     * and p2 is frozen before fixing tail.
+     *
+     * Dequeue must derive correctness from the physical chain,
+     * not from tail being current.
+     */
+
+    assertEquals(1, queue.dequeue());
+
+    allowHelperRepair.countDown();
+    allowFirstTailAdvance.countDown();
+
+    p1.join();
+    p2.join();
+
+    assertEquals(2, queue.dequeue());
+    assertNull(queue.dequeue());
+  }
+
   private static void await(CountDownLatch latch) {
     try {
       latch.await();

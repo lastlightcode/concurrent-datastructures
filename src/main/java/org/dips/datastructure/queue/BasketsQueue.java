@@ -11,14 +11,14 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
   private final AtomicReference<Node<T>> tail;
   private final int MAX_RETRY_ATTEMPTS;
 
-  private final EnqueueProbe<T> probe;
+  private final EnqueueProbe<T> enqueueProbe;
   private final DequeueProbe<T> dequeueProbe;
 
   public BasketsQueue(int maxRetryAttempts, int maxJumps) {
     this(maxRetryAttempts, maxJumps, new EnqueueProbe<T>() {}, new DequeueProbe<T>() {});
   }
 
-  BasketsQueue(int maxRetryAttempts, int maxJumps, EnqueueProbe<T> probe,  DequeueProbe<T> dequeueProbe) {
+  BasketsQueue(int maxRetryAttempts, int maxJumps, EnqueueProbe<T> enqueueProbe, DequeueProbe<T> dequeueProbe) {
     Node<T> node = new Node<>();
 
     head = new AtomicReference<>(node);
@@ -27,7 +27,7 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
     MAX_RETRY_ATTEMPTS = maxRetryAttempts;
     MAX_JUMPS = maxJumps;
 
-    this.probe = probe;
+    this.enqueueProbe = enqueueProbe;
     this.dequeueProbe = dequeueProbe;
   }
 
@@ -46,6 +46,7 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
 
       if (next == null && !deleted) {
         if (obsrvdTail.next.compareAndSet(null, node, false, false)) {
+          enqueueProbe.afterOrdinaryLink(obsrvdTail, node);
           tail.compareAndSet(obsrvdTail, node);
           return;
         }
@@ -77,6 +78,7 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
           candidate = candidate.next.getReference();
         }
 
+        enqueueProbe.beforeTailRepair(obsrvdTail, candidate);
         tail.compareAndSet(obsrvdTail, candidate);
       }
     }
@@ -135,7 +137,6 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
           // try to mark current.next
           if (current.next.compareAndSet(candidate, candidate, false, true)) {
             // clean when jumps reaches MAX_JUMPS
-            dequeueProbe.afterMarkCas(current, candidate);
             if (jumps >= MAX_JUMPS) {
               head.compareAndSet(obsrvdHead, candidate);
             }
@@ -194,6 +195,11 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
 
     default void beforeTailRepair(
         BasketsQueue.Node<T> observedTail) {
+    }
+
+    default void beforeTailRepair(
+        BasketsQueue.Node<T> observedTail,
+        BasketsQueue.Node<T> candidate) {
     }
 
     default void beforeOrdinaryLink(
