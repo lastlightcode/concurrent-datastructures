@@ -46,7 +46,7 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
 
       if (next == null && !deleted) {
         if (obsrvdTail.next.compareAndSet(null, node, false, false)) {
-          enqueueProbe.afterOrdinaryLink(obsrvdTail, node);
+          enqueueProbe.beforeOrdinaryLink(obsrvdTail, node);
           tail.compareAndSet(obsrvdTail, node);
           return;
         }
@@ -78,7 +78,6 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
           candidate = candidate.next.getReference();
         }
 
-        enqueueProbe.beforeTailRepair(obsrvdTail, candidate);
         tail.compareAndSet(obsrvdTail, candidate);
       }
     }
@@ -156,6 +155,10 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
 
   Node<T> tailNode() {
     return tail.get();
+  }
+
+  Node<T> headNode() {
+    return head.get();
   }
 
   static final class Node<T> {

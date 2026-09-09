@@ -5,7 +5,10 @@ import org.dips.datastructure.queue.BasketsQueue.EnqueueProbe;
 import org.dips.datastructure.queue.BasketsQueue.Node;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -13,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -801,6 +805,169 @@ class BasketsQueueTest {
 
     assertEquals(2, queue.dequeue());
     assertNull(queue.dequeue());
+  }
+
+  @Test
+  void physicalChainRemainsAcyclicUnderConcurrentBasketInsertion() throws Exception {
+    int rounds = 500;
+    int producersPerRound = 8;
+
+    var queue = new BasketsQueue<Integer>(
+        16,     // MAX_RETRY_ATTEMPTS
+        16,     // MAX_JUMPS
+        new EnqueueProbe<>() {},
+        new DequeueProbe<>() {}
+    );
+
+    var valueGenerator = new AtomicInteger();
+
+    for (int round = 0; round < rounds; round++) {
+
+      var ready = new CountDownLatch(producersPerRound);
+      var start = new CountDownLatch(1);
+
+      var threads = new ArrayList<Thread>();
+
+      for (int i = 0; i < producersPerRound; i++) {
+        int value = valueGenerator.incrementAndGet();
+
+        threads.add(
+            Thread.ofPlatform().start(() -> {
+              ready.countDown();
+              await(start);
+
+              queue.enqueue(value);
+            })
+        );
+      }
+
+      assertTrue(
+          ready.await(5, TimeUnit.SECONDS),
+          "All producers should reach the starting gate"
+      );
+
+      // Unleash the horde.
+      start.countDown();
+
+      for (var thread : threads) {
+        thread.join();
+      }
+
+      assertPhysicalChainIsAcyclic(queue);
+    }
+  }
+
+  @Test
+  void physicalChainRemainsAcyclicWhenManyProducersCompeteForSameInsertionPoint()
+      throws Exception {
+
+    int producers = 8;
+
+    var arrivedAtOrdinaryCas = new CountDownLatch(producers);
+    var unleashCas = new CountDownLatch(1);
+
+    var firstCollision = new AtomicBoolean(true);
+
+    EnqueueProbe<Integer> probe = new EnqueueProbe<>() {
+
+      @Override
+      public void beforeOrdinaryLink(
+          BasketsQueue.Node<Integer> observedTail,
+          BasketsQueue.Node<Integer> node) {
+
+        /*
+         * Only coordinate the initial collision.
+         *
+         * Once producers retry elsewhere we must not keep
+         * trapping them at this barrier.
+         */
+        if (firstCollision.get()) {
+          arrivedAtOrdinaryCas.countDown();
+          await(unleashCas);
+        }
+      }
+    };
+
+    var queue = new BasketsQueue<Integer>(
+        32,
+        16,
+        probe,
+        new DequeueProbe<>() {}
+    );
+
+    var threads = new ArrayList<Thread>();
+
+    for (int i = 0; i < producers; i++) {
+      int value = i;
+
+      threads.add(
+          Thread.ofPlatform().start(() ->
+              queue.enqueue(value)
+          )
+      );
+    }
+
+    assertTrue(
+        arrivedAtOrdinaryCas.await(5, TimeUnit.SECONDS),
+        "Every producer should observe the initial insertion position"
+    );
+
+    /*
+     * Right now all eight producers have reasoned from roughly:
+     *
+     *          tail
+     *            ↓
+     *            S
+     *            |
+     *        S.next == null
+     *
+     * They are all about to attempt:
+     *
+     *     CAS(S.next, null, myNode)
+     *
+     * One wins.
+     * Seven lose.
+     *
+     * Those seven are now eligible for our basket path.
+     */
+
+    firstCollision.set(false);
+    unleashCas.countDown();
+
+    for (var thread : threads) {
+      thread.join();
+    }
+
+    assertPhysicalChainIsAcyclic(queue);
+  }
+
+  private static <T> void assertPhysicalChainIsAcyclic(BasketsQueue<T> queue) {
+
+    Set<BasketsQueue.Node<T>> visited =
+        Collections.newSetFromMap(new IdentityHashMap<>());
+
+    var current = queue.headNode();
+
+    int traversed = 0;
+
+    while (current != null) {
+
+      int finalTraversed = traversed;
+      assertTrue(
+          visited.add(current),
+          () -> "Cycle detected after traversing "
+              + finalTraversed
+              + " nodes"
+      );
+
+      current = current.next.getReference();
+      traversed++;
+
+      assertTrue(
+          traversed < 1_000_000,
+          "Physical chain traversal appears not to terminate"
+      );
+    }
   }
 
   private static void await(CountDownLatch latch) {
