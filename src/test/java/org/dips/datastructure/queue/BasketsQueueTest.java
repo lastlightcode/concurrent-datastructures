@@ -323,6 +323,60 @@ class BasketsQueueTest {
     assertNull(queue.dequeue());
   }
 
+  @Test
+  void producerAppendRemainsReachableWhileConsumerPausedBeforeHeadCleanup() throws Exception {
+    var consumerMarkedCandidate = new CountDownLatch(1);
+    var allowConsumerToContinue = new CountDownLatch(1);
+
+    DequeueProbe<Integer> dequeueProbe = new DequeueProbe<>() {
+      @Override
+      public void afterMarkCas(
+          BasketsQueue.Node<Integer> current,
+          BasketsQueue.Node<Integer> candidate) {
+
+        consumerMarkedCandidate.countDown();
+        await(allowConsumerToContinue);
+      }
+    };
+
+    var queue = new BasketsQueue<Integer>(
+        0,
+        new EnqueueProbe<>() {},
+        dequeueProbe
+    );
+
+    queue.enqueue(1);
+
+    var dequeued = new AtomicReference<Integer>();
+
+    var consumer = Thread.ofPlatform().start(() ->
+        dequeued.set(queue.dequeue())
+    );
+
+    assertTrue(
+        consumerMarkedCandidate.await(5, TimeUnit.SECONDS),
+        "Consumer should mark the candidate before being released"
+    );
+
+    // Consumer has logically deleted 1,
+    // but has not yet advanced head.
+    queue.enqueue(2);
+
+    allowConsumerToContinue.countDown();
+
+    consumer.join();
+
+    assertEquals(1, dequeued.get());
+
+    assertEquals(
+        2,
+        queue.dequeue(),
+        "Element appended while consumer was paused must remain reachable"
+    );
+
+    assertNull(queue.dequeue());
+  }
+
   private static void await(CountDownLatch latch) {
     try {
       latch.await();

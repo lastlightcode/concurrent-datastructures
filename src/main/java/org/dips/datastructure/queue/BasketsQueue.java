@@ -138,11 +138,12 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
         }
 
         if (!deleted) {
-          dequeueProbe.beforeMarkCas(current, candidate);
-
           // candidate is the first live node
           // try to mark current.next
           if (current.next.compareAndSet(candidate, candidate, false, true)) {
+
+            dequeueProbe.afterMarkCas(current, candidate);
+
             // clean when jumps reaches MAX_JUMPS
             if (jumps >= MAX_JUMPS) {
               head.compareAndSet(obsrvdHead, candidate);
@@ -215,6 +216,11 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
   interface DequeueProbe<T> {
 
     default void beforeMarkCas(
+        BasketsQueue.Node<T> current,
+        BasketsQueue.Node<T> candidate) {
+    }
+
+    default void afterMarkCas(
         BasketsQueue.Node<T> current,
         BasketsQueue.Node<T> candidate) {
     }
