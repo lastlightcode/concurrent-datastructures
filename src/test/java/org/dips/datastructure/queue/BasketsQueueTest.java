@@ -17,9 +17,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BasketsQueueTest {
@@ -571,6 +573,91 @@ class BasketsQueueTest {
         Set.of(r1.get(), r2.get())
     );
 
+    assertNull(queue.dequeue());
+  }
+
+  @Test
+  void markedLinkCannotBeChangedUsingStaleUnmarkedExpectation() throws Exception {
+    var consumerAfterMark = new CountDownLatch(1);
+    var allowConsumerToReturn = new CountDownLatch(1);
+
+    var capturedCurrent =
+        new AtomicReference<BasketsQueue.Node<Integer>>();
+
+    var capturedCandidate =
+        new AtomicReference<BasketsQueue.Node<Integer>>();
+
+    DequeueProbe<Integer> dequeueProbe = new DequeueProbe<>() {
+      @Override
+      public void afterMarkCas(
+          BasketsQueue.Node<Integer> current,
+          BasketsQueue.Node<Integer> candidate) {
+
+        capturedCurrent.set(current);
+        capturedCandidate.set(candidate);
+
+        consumerAfterMark.countDown();
+        await(allowConsumerToReturn);
+      }
+    };
+
+    var queue = new BasketsQueue<Integer>(
+        16,
+        16,
+        new EnqueueProbe<>() {},
+        dequeueProbe
+    );
+
+    queue.enqueue(42);
+
+    var result = new AtomicReference<Integer>();
+
+    var consumer = Thread.ofPlatform().start(() ->
+        result.set(queue.dequeue())
+    );
+
+    assertTrue(
+        consumerAfterMark.await(5, TimeUnit.SECONDS),
+        "Consumer should successfully mark the candidate"
+    );
+
+    var current = capturedCurrent.get();
+    var candidate = capturedCandidate.get();
+
+    assertNotNull(current);
+    assertNotNull(candidate);
+
+    boolean staleCasSucceeded =
+        current.next.compareAndSet(
+            candidate,
+            candidate,
+            false,
+            false
+        );
+
+    assertFalse(
+        staleCasSucceeded,
+        "CAS expecting the old unmarked state must fail"
+    );
+
+    boolean[] markHolder = new boolean[1];
+    var reference = current.next.get(markHolder);
+
+    assertSame(
+        candidate,
+        reference,
+        "Reference should still point to the same candidate"
+    );
+
+    assertTrue(
+        markHolder[0],
+        "Once marked, the link must remain marked"
+    );
+
+    allowConsumerToReturn.countDown();
+    consumer.join();
+
+    assertEquals(42, result.get());
     assertNull(queue.dequeue());
   }
 

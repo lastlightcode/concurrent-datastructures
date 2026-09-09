@@ -135,8 +135,8 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
           // try to mark current.next
           if (current.next.compareAndSet(candidate, candidate, false, true)) {
             // clean when jumps reaches MAX_JUMPS
+            dequeueProbe.afterMarkCas(current, candidate);
             if (jumps >= MAX_JUMPS) {
-              dequeueProbe.beforeHeadCleanup(obsrvdHead, candidate);
               head.compareAndSet(obsrvdHead, candidate);
             }
 
