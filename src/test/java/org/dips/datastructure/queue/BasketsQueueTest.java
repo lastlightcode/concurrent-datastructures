@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -372,6 +373,130 @@ class BasketsQueueTest {
         2,
         queue.dequeue(),
         "Element appended while consumer was paused must remain reachable"
+    );
+
+    assertNull(queue.dequeue());
+  }
+
+  @Test
+  void staleBasketProducerCannotPublishBehindAdvancedHead() throws Exception {
+    var loserBeforeOrdinaryCas = new CountDownLatch(1);
+    var allowLoserOrdinaryCas = new CountDownLatch(1);
+
+    var winnerAfterOrdinaryLink = new CountDownLatch(1);
+    var allowWinnerTailUpdate = new CountDownLatch(1);
+
+    var loserBeforeBasketCas = new CountDownLatch(1);
+    var allowLoserBasketCas = new CountDownLatch(1);
+
+    var consumerAfterMarkCas = new CountDownLatch(1);
+    var allowConsumerCleanup = new CountDownLatch(1);
+
+    var ordinaryCalls = new AtomicInteger();
+
+    EnqueueProbe<Integer> enqueueProbe = new EnqueueProbe<>() {
+
+      @Override
+      public void beforeOrdinaryLink(
+          BasketsQueue.Node<Integer> observedTail,
+          BasketsQueue.Node<Integer> node) {
+
+        int call = ordinaryCalls.incrementAndGet();
+
+        if (call == 1) {
+          loserBeforeOrdinaryCas.countDown();
+          await(allowLoserOrdinaryCas);
+        }
+      }
+
+      @Override
+      public void afterOrdinaryLink(
+          BasketsQueue.Node<Integer> observedTail,
+          BasketsQueue.Node<Integer> node) {
+
+        winnerAfterOrdinaryLink.countDown();
+        await(allowWinnerTailUpdate);
+      }
+
+      @Override
+      public void beforeBasketCas(
+          BasketsQueue.Node<Integer> observedTail,
+          BasketsQueue.Node<Integer> current,
+          BasketsQueue.Node<Integer> node) {
+
+        loserBeforeBasketCas.countDown();
+        await(allowLoserBasketCas);
+      }
+    };
+
+    DequeueProbe<Integer> dequeueProbe = new DequeueProbe<>() {
+      @Override
+      public void afterMarkCas(
+          BasketsQueue.Node<Integer> current,
+          BasketsQueue.Node<Integer> candidate) {
+
+        consumerAfterMarkCas.countDown();
+        await(allowConsumerCleanup);
+      }
+    };
+
+    var queue = new BasketsQueue<Integer>(
+        16,
+        enqueueProbe,
+        dequeueProbe
+    );
+
+    var loser = Thread.ofPlatform().start(() ->
+        queue.enqueue(2)
+    );
+
+    assertTrue(
+        loserBeforeOrdinaryCas.await(5, TimeUnit.SECONDS),
+        "Loser should observe null before ordinary CAS"
+    );
+
+    var winner = Thread.ofPlatform().start(() ->
+        queue.enqueue(1)
+    );
+
+    assertTrue(
+        winnerAfterOrdinaryLink.await(5, TimeUnit.SECONDS),
+        "Winner should publish before updating tail"
+    );
+
+    allowLoserOrdinaryCas.countDown();
+
+    assertTrue(
+        loserBeforeBasketCas.await(5, TimeUnit.SECONDS),
+        "Loser should reach stale basket CAS"
+    );
+
+    var result = new AtomicReference<Integer>();
+
+    var consumer = Thread.ofPlatform().start(() ->
+        result.set(queue.dequeue())
+    );
+
+    assertTrue(
+        consumerAfterMarkCas.await(5, TimeUnit.SECONDS),
+        "Consumer should mark the live candidate"
+    );
+
+    allowConsumerCleanup.countDown();
+    consumer.join();
+
+    assertEquals(1, result.get());
+
+    allowLoserBasketCas.countDown();
+    allowWinnerTailUpdate.countDown();
+
+    loser.join();
+    winner.join();
+
+    assertEquals(
+        2,
+        queue.dequeue(),
+        "Stale producer must not publish behind the reclaimed frontier"
     );
 
     assertNull(queue.dequeue());
