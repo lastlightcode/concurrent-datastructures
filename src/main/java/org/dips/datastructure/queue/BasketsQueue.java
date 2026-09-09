@@ -12,18 +12,22 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
   private final int MAX_RETRY_ATTEMPTS;
 
   private final EnqueueProbe<T> probe;
+  private final DequeueProbe<T> dequeueProbe;
 
   public BasketsQueue(int maxRetryAttempts) {
-    this(maxRetryAttempts, new EnqueueProbe<T>() {
-    });
+    this(maxRetryAttempts, new EnqueueProbe<T>() {}, new DequeueProbe<T>() {});
   }
 
-  BasketsQueue(int maxRetryAttempts, EnqueueProbe<T> probe) {
+  BasketsQueue(int maxRetryAttempts, EnqueueProbe<T> probe,  DequeueProbe<T> dequeueProbe) {
     Node<T> node = new Node<>();
+
     head = new AtomicReference<>(node);
     tail = new AtomicReference<>(node);
+
     MAX_RETRY_ATTEMPTS = maxRetryAttempts;
+
     this.probe = probe;
+    this.dequeueProbe = dequeueProbe;
   }
 
   public void enqueue(T elem) {
@@ -134,6 +138,8 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
         }
 
         if (!deleted) {
+          dequeueProbe.beforeMarkCas(current, candidate);
+
           // candidate is the first live node
           // try to mark current.next
           if (current.next.compareAndSet(candidate, candidate, false, true)) {
@@ -204,5 +210,13 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
     }
 
     default void afterBasketRetryExhausted(Node<T> node) {}
+  }
+
+  interface DequeueProbe<T> {
+
+    default void beforeMarkCas(
+        BasketsQueue.Node<T> current,
+        BasketsQueue.Node<T> candidate) {
+    }
   }
 }

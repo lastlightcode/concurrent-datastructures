@@ -1,7 +1,13 @@
 package org.dips.datastructure.queue;
 
+import org.dips.datastructure.queue.BasketsQueue.DequeueProbe;
+import org.dips.datastructure.queue.BasketsQueue.EnqueueProbe;
+import org.dips.datastructure.queue.BasketsQueue.Node;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -248,6 +254,71 @@ class BasketsQueueTest {
     for (int i = 0; i < count; i++) {
       assertTrue(consumed.contains(i));
     }
+
+    assertNull(queue.dequeue());
+  }
+
+  @Test
+  void onlyOneConsumerCanClaimSameLiveCandidate() throws Exception {
+    var bothAtMarkCas = new CountDownLatch(2);
+    var releaseConsumers = new CountDownLatch(1);
+
+    DequeueProbe<Integer> dequeueProbe = new DequeueProbe<>() {
+
+      @Override
+      public void beforeMarkCas(
+          Node<Integer> current,
+          Node<Integer> candidate) {
+
+        bothAtMarkCas.countDown();
+        await(releaseConsumers);
+      }
+    };
+
+    var queue = new BasketsQueue<>(
+        16,
+        new EnqueueProbe<>() {
+        },
+        dequeueProbe
+    );
+
+    queue.enqueue(42);
+
+    var result1 = new AtomicReference<Integer>();
+    var result2 = new AtomicReference<Integer>();
+
+    var c1 = Thread.ofPlatform().start(() ->
+        result1.set(queue.dequeue())
+    );
+
+    var c2 = Thread.ofPlatform().start(() ->
+        result2.set(queue.dequeue())
+    );
+
+    assertTrue(
+        bothAtMarkCas.await(5, TimeUnit.SECONDS),
+        "Both consumers should observe the live candidate before either CASes"
+    );
+
+    releaseConsumers.countDown();
+
+    c1.join();
+    c2.join();
+
+    var results = Arrays.asList(result1.get(), result2.get());
+
+    assertEquals(
+        1,
+        results.stream()
+            .filter(Objects::nonNull)
+            .count(),
+        "Exactly one consumer should dequeue the element"
+    );
+
+    assertTrue(
+        results.contains(42),
+        "The successfully dequeued value should be 42"
+    );
 
     assertNull(queue.dequeue());
   }
