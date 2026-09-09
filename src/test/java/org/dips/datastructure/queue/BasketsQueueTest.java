@@ -5,6 +5,8 @@ import org.dips.datastructure.queue.BasketsQueue.EnqueueProbe;
 import org.dips.datastructure.queue.BasketsQueue.Node;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
@@ -21,6 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -1253,6 +1256,160 @@ class BasketsQueueTest {
 
     assertPhysicalChainIsAcyclic(queue);
     assertTailIsAtPhysicalEnd(queue);
+  }
+
+  static Stream<Arguments> basketQueuePolicies() {
+    int[] retryAttempts = {0, 1, 2, 4, 16};
+    int[] jumps = {0, 1, 2, 8, 32};
+
+    return Arrays.stream(retryAttempts)
+        .boxed()
+        .flatMap(retry ->
+            Arrays.stream(jumps)
+                .mapToObj(jump -> Arguments.of(retry, jump))
+        );
+  }
+
+  @ParameterizedTest(name = "retries={0}, jumps={1}")
+  @MethodSource("basketQueuePolicies")
+  void correctnessDoesNotDependOnRetryOrCleanupPolicy(
+      int maxRetryAttempts,
+      int maxJumps
+  ) throws Exception {
+
+    int producers = 8;
+    int consumers = 8;
+    int valuesPerProducer = 5_000;
+
+    int expectedTotal = producers * valuesPerProducer;
+
+    var queue = new BasketsQueue<Integer>(
+        maxRetryAttempts,
+        maxJumps,
+        new EnqueueProbe<>() {},
+        new DequeueProbe<>() {}
+    );
+
+    var start = new CountDownLatch(1);
+    var producersDone = new CountDownLatch(producers);
+
+    var consumed = ConcurrentHashMap.<Integer>newKeySet();
+    var duplicateDetected = new AtomicBoolean(false);
+
+    var producerThreads = new ArrayList<Thread>();
+    var consumerThreads = new ArrayList<Thread>();
+
+    for (int producer = 0; producer < producers; producer++) {
+      int producerId = producer;
+
+      producerThreads.add(
+          Thread.ofPlatform().start(() -> {
+            await(start);
+
+            int base = producerId * valuesPerProducer;
+
+            for (int i = 0; i < valuesPerProducer; i++) {
+              queue.enqueue(base + i);
+            }
+
+            producersDone.countDown();
+          })
+      );
+    }
+
+    for (int consumer = 0; consumer < consumers; consumer++) {
+      consumerThreads.add(
+          Thread.ofPlatform().start(() -> {
+            await(start);
+
+            while (true) {
+              Integer value = queue.dequeue();
+
+              if (value != null) {
+                if (!consumed.add(value)) {
+                  duplicateDetected.set(true);
+                }
+
+                continue;
+              }
+
+              if (producersDone.getCount() == 0) {
+                return;
+              }
+
+              Thread.onSpinWait();
+            }
+          })
+      );
+    }
+
+    start.countDown();
+
+    for (var thread : producerThreads) {
+      thread.join();
+    }
+
+    for (var thread : consumerThreads) {
+      thread.join();
+    }
+
+    /*
+     * Final quiescent drain.
+     */
+    Integer value;
+
+    while ((value = queue.dequeue()) != null) {
+      if (!consumed.add(value)) {
+        duplicateDetected.set(true);
+      }
+    }
+
+    assertFalse(
+        duplicateDetected.get(),
+        "No logical value should be dequeued twice"
+    );
+
+    assertEquals(
+        expectedTotal,
+        consumed.size(),
+        () -> "Missing values with retries="
+            + maxRetryAttempts
+            + ", jumps="
+            + maxJumps
+    );
+
+    for (int i = 0; i < expectedTotal; i++) {
+      int expected = i;
+
+      assertTrue(
+          consumed.contains(expected),
+          () -> "Missing value "
+              + expected
+              + " with retries="
+              + maxRetryAttempts
+              + ", jumps="
+              + maxJumps
+      );
+    }
+
+    assertPhysicalChainIsAcyclic(queue);
+    assertAllReachableValueNodesAreLogicallyDeleted(queue);
+
+    assertNull(queue.dequeue());
+
+    /*
+     * Reuse after the entire concurrent workload.
+     */
+    queue.enqueue(Integer.MAX_VALUE);
+
+    assertEquals(
+        Integer.MAX_VALUE,
+        queue.dequeue()
+    );
+
+    assertNull(queue.dequeue());
+
+    assertPhysicalChainIsAcyclic(queue);
   }
 
   private static <T> void assertPhysicalChainIsAcyclic(BasketsQueue<T> queue) {
