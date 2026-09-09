@@ -1048,6 +1048,94 @@ class BasketsQueueTest {
     }
   }
 
+  @Test
+  void dequeueUsesPhysicalEndToDetermineExhaustionEvenWhenTailIsMisleading()
+      throws Exception {
+
+    var queue = new BasketsQueue<Integer>(
+        16,     // MAX_RETRY_ATTEMPTS
+        100,    // MAX_JUMPS: deliberately avoid head cleanup during setup
+        new EnqueueProbe<>() {},
+        new DequeueProbe<>() {}
+    );
+
+    queue.enqueue(1);
+    queue.enqueue(2);
+    queue.enqueue(3);
+
+    /*
+     * Mark all three nodes logically deleted.
+     *
+     * Because MAX_JUMPS is large, head should remain at the old sentinel
+     * throughout this setup.
+     */
+    assertEquals(1, queue.dequeue());
+    assertEquals(2, queue.dequeue());
+    assertEquals(3, queue.dequeue());
+
+    /*
+     * Physical structure should now resemble:
+     *
+     * head
+     *  ↓
+     *  S -> 1 -> 2 -> 3 -> null
+     *       X    X    X
+     *
+     * Logical queue is empty, but physical nodes remain.
+     */
+
+    var head = queue.headNode();
+
+    boolean[] markHolder = new boolean[1];
+
+    var one = head.next.get(markHolder);
+    assertNotNull(one);
+    assertTrue(markHolder[0], "1 should be logically deleted");
+
+    var two = one.next.get(markHolder);
+    assertNotNull(two);
+    assertTrue(markHolder[0], "2 should be logically deleted");
+
+    var three = two.next.get(markHolder);
+    assertNotNull(three);
+    assertTrue(markHolder[0], "3 should be logically deleted");
+
+    assertNull(
+        three.next.getReference(),
+        "3 should be the physical end of the chain"
+    );
+
+    /*
+     * Now deliberately make tail misleading.
+     *
+     * Ideally expose a package-private test helper:
+     *
+     *     void setTailNodeForTest(Node<T> node)
+     *
+     * or manipulate the AtomicReference directly if your test already has
+     * package-private access.
+     *
+     * Put tail somewhere inside the dead chain.
+     */
+    queue.setTailNodeForTest(one);
+
+    assertSame(one, queue.tailNode());
+
+    /*
+     * This is the actual invariant under attack.
+     *
+     * dequeue() must not conclude anything from tail == some stale node.
+     * It must traverse marks until candidate == null.
+     */
+    assertNull(queue.dequeue());
+
+    /*
+     * And after reaching physical end, your current implementation may
+     * opportunistically advance head to the last dead node.
+     */
+    assertNull(queue.dequeue());
+  }
+
   private static void await(CountDownLatch latch) {
     try {
       latch.await();

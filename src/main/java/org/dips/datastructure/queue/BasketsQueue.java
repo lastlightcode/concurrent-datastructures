@@ -161,6 +161,10 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
     return head.get();
   }
 
+  void setTailNodeForTest(Node<T> node) {
+    tail.set(node);
+  }
+
   static final class Node<T> {
     final T value;
     final AtomicMarkableReference<Node<T>> next;
