@@ -19,6 +19,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -1410,6 +1411,127 @@ class BasketsQueueTest {
     assertNull(queue.dequeue());
 
     assertPhysicalChainIsAcyclic(queue);
+  }
+
+  @Test
+  void chaoticStressTest() throws Exception {
+    int rounds = 50;
+
+    var random = ThreadLocalRandom.current();
+
+    for (int round = 0; round < rounds; round++) {
+      int producers = random.nextInt(1, 17);
+      int consumers = random.nextInt(1, 17);
+
+      int maxRetryAttempts = random.nextInt(0, 17);
+      int maxJumps = random.nextInt(0, 33);
+
+      int valuesPerProducer = 2_000;
+      int expectedTotal = producers * valuesPerProducer;
+
+      var queue = new BasketsQueue<Integer>(
+          maxRetryAttempts,
+          maxJumps,
+          new EnqueueProbe<>() {},
+          new DequeueProbe<>() {}
+      );
+
+      var start = new CountDownLatch(1);
+      var producersDone = new CountDownLatch(producers);
+
+      var consumed = ConcurrentHashMap.<Integer>newKeySet();
+      var duplicateDetected = new AtomicBoolean(false);
+
+      var threads = new ArrayList<Thread>();
+
+      for (int p = 0; p < producers; p++) {
+        int producerId = p;
+
+        threads.add(
+            Thread.ofPlatform().start(() -> {
+              await(start);
+
+              int base = producerId * valuesPerProducer;
+
+              for (int i = 0; i < valuesPerProducer; i++) {
+                queue.enqueue(base + i);
+
+                if ((i & 63) == 0) {
+                  Thread.yield();
+                }
+              }
+
+              producersDone.countDown();
+            })
+        );
+      }
+
+      for (int c = 0; c < consumers; c++) {
+        threads.add(
+            Thread.ofPlatform().start(() -> {
+              await(start);
+
+              while (true) {
+                Integer value = queue.dequeue();
+
+                if (value != null) {
+                  if (!consumed.add(value)) {
+                    duplicateDetected.set(true);
+                  }
+
+                  if ((value & 127) == 0) {
+                    Thread.yield();
+                  }
+
+                  continue;
+                }
+
+                if (producersDone.getCount() == 0) {
+                  return;
+                }
+
+                Thread.onSpinWait();
+              }
+            })
+        );
+      }
+
+      start.countDown();
+
+      for (var thread : threads) {
+        thread.join();
+      }
+
+      Integer value;
+
+      while ((value = queue.dequeue()) != null) {
+        if (!consumed.add(value)) {
+          duplicateDetected.set(true);
+        }
+      }
+
+      assertFalse(
+          duplicateDetected.get(),
+          "Duplicate detected in round " + round
+      );
+
+      assertEquals(
+          expectedTotal,
+          consumed.size(),
+          "Missing values in round " + round
+              + " producers=" + producers
+              + " consumers=" + consumers
+              + " retries=" + maxRetryAttempts
+              + " jumps=" + maxJumps
+      );
+
+      assertPhysicalChainIsAcyclic(queue);
+      assertAllReachableValueNodesAreLogicallyDeleted(queue);
+
+      queue.enqueue(Integer.MAX_VALUE);
+      assertEquals(Integer.MAX_VALUE, queue.dequeue());
+      assertNull(queue.dequeue());
+    }
   }
 
   private static <T> void assertPhysicalChainIsAcyclic(BasketsQueue<T> queue) {

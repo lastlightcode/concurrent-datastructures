@@ -46,7 +46,6 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
 
       if (next == null && !deleted) {
         if (obsrvdTail.next.compareAndSet(null, node, false, false)) {
-          enqueueProbe.beforeOrdinaryLink(obsrvdTail, node);
           tail.compareAndSet(obsrvdTail, node);
           return;
         }
