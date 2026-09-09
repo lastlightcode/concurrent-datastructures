@@ -26,7 +26,7 @@ class BasketsQueueTest {
 
   @Test
   void singleProducerEnqueuesAllElements() {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     queue.enqueue(1);
     queue.enqueue(2);
@@ -43,7 +43,7 @@ class BasketsQueueTest {
     int producers = 8;
     int elementsPerProducer = 10_000;
 
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     try (var executor = Executors.newFixedThreadPool(producers)) {
       var start = new CountDownLatch(1);
@@ -75,14 +75,14 @@ class BasketsQueueTest {
 
   @Test
   void emptyQueueReturnsNull() {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     assertNull(queue.dequeue());
   }
 
   @Test
   void singleElementCanBeDequeued() {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     queue.enqueue(42);
 
@@ -92,7 +92,7 @@ class BasketsQueueTest {
 
   @Test
   void preservesFifoForSequentialOperations() {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     queue.enqueue(1);
     queue.enqueue(2);
@@ -106,7 +106,7 @@ class BasketsQueueTest {
 
   @Test
   void canReuseQueueAfterBecomingEmpty() {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     queue.enqueue(1);
     assertEquals(1, queue.dequeue());
@@ -119,7 +119,7 @@ class BasketsQueueTest {
 
   @Test
   void twoConsumersDoNotReturnSameElement() throws Exception {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     queue.enqueue(1);
     queue.enqueue(2);
@@ -159,7 +159,7 @@ class BasketsQueueTest {
 
   @Test
   void repeatedDequeuesCanTraverseDeletedPrefix() {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     for (int i = 0; i < 100; i++) {
       queue.enqueue(i);
@@ -175,7 +175,7 @@ class BasketsQueueTest {
 
   @Test
   void smallCleanupThresholdDoesNotLoseElements() {
-    var queue = new BasketsQueue<Integer>(2);
+    var queue = new BasketsQueue<Integer>(2, 16);
 
     queue.enqueue(1);
     queue.enqueue(2);
@@ -194,7 +194,7 @@ class BasketsQueueTest {
 
   @Test
   void enqueueAfterSeveralDequeuesRemainsReachable() {
-    var queue = new BasketsQueue<Integer>(2);
+    var queue = new BasketsQueue<Integer>(2, 16);
 
     queue.enqueue(1);
     queue.enqueue(2);
@@ -215,7 +215,7 @@ class BasketsQueueTest {
 
   @Test
   void concurrentProducerAndConsumerDoNotLoseElements() throws Exception {
-    var queue = new BasketsQueue<Integer>(4);
+    var queue = new BasketsQueue<Integer>(4, 16);
 
     int count = 10_000;
 
@@ -278,8 +278,8 @@ class BasketsQueueTest {
 
     var queue = new BasketsQueue<>(
         16,
-        new EnqueueProbe<>() {
-        },
+        16,
+        new EnqueueProbe<>() {},
         dequeueProbe
     );
 
@@ -342,6 +342,7 @@ class BasketsQueueTest {
 
     var queue = new BasketsQueue<Integer>(
         0,
+        16,
         new EnqueueProbe<>() {},
         dequeueProbe
     );
@@ -442,6 +443,7 @@ class BasketsQueueTest {
 
     var queue = new BasketsQueue<Integer>(
         16,
+        16,
         enqueueProbe,
         dequeueProbe
     );
@@ -497,6 +499,76 @@ class BasketsQueueTest {
         2,
         queue.dequeue(),
         "Stale producer must not publish behind the reclaimed frontier"
+    );
+
+    assertNull(queue.dequeue());
+  }
+
+  @Test
+  void twoConsumersRacingToAdvanceSameHeadDoNotLoseElements() throws Exception {
+    var bothBeforeHeadCleanup = new CountDownLatch(2);
+    var allowCleanup = new CountDownLatch(1);
+
+    DequeueProbe<Integer> dequeueProbe = new DequeueProbe<>() {
+      @Override
+      public void beforeHeadCleanup(
+          BasketsQueue.Node<Integer> observedHead,
+          BasketsQueue.Node<Integer> cleanupTarget) {
+
+        bothBeforeHeadCleanup.countDown();
+        await(allowCleanup);
+      }
+    };
+
+    var queue = new BasketsQueue<Integer>(
+        16,
+        2,
+        new EnqueueProbe<>() {},
+        dequeueProbe
+    );
+
+    queue.enqueue(1);
+    queue.enqueue(2);
+    queue.enqueue(3);
+    queue.enqueue(4);
+
+    // Create a dead prefix first.
+    assertEquals(1, queue.dequeue());
+    assertEquals(2, queue.dequeue());
+
+    var r1 = new AtomicReference<Integer>();
+    var r2 = new AtomicReference<Integer>();
+
+    var c1 = Thread.ofPlatform().start(() ->
+        r1.set(queue.dequeue())
+    );
+
+    var c2 = Thread.ofPlatform().start(() ->
+        r2.set(queue.dequeue())
+    );
+
+    assertTrue(
+        bothBeforeHeadCleanup.await(5, TimeUnit.SECONDS),
+        "Both consumers should reach head cleanup from the same old frontier"
+    );
+
+    allowCleanup.countDown();
+
+    c1.join();
+    c2.join();
+
+    assertNotNull(r1.get());
+    assertNotNull(r2.get());
+
+    assertNotEquals(
+        r1.get(),
+        r2.get(),
+        "Consumers must not return the same element"
+    );
+
+    assertEquals(
+        Set.of(3, 4),
+        Set.of(r1.get(), r2.get())
     );
 
     assertNull(queue.dequeue());

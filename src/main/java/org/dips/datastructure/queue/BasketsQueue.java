@@ -5,7 +5,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class BasketsQueue<T> implements ConcurrentQueue<T> {
 
-  private static final int MAX_JUMPS = 16;
+  private final int MAX_JUMPS;
 
   private final AtomicReference<Node<T>> head;
   private final AtomicReference<Node<T>> tail;
@@ -14,17 +14,18 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
   private final EnqueueProbe<T> probe;
   private final DequeueProbe<T> dequeueProbe;
 
-  public BasketsQueue(int maxRetryAttempts) {
-    this(maxRetryAttempts, new EnqueueProbe<T>() {}, new DequeueProbe<T>() {});
+  public BasketsQueue(int maxRetryAttempts, int maxJumps) {
+    this(maxRetryAttempts, maxJumps, new EnqueueProbe<T>() {}, new DequeueProbe<T>() {});
   }
 
-  BasketsQueue(int maxRetryAttempts, EnqueueProbe<T> probe,  DequeueProbe<T> dequeueProbe) {
+  BasketsQueue(int maxRetryAttempts, int maxJumps, EnqueueProbe<T> probe,  DequeueProbe<T> dequeueProbe) {
     Node<T> node = new Node<>();
 
     head = new AtomicReference<>(node);
     tail = new AtomicReference<>(node);
 
     MAX_RETRY_ATTEMPTS = maxRetryAttempts;
+    MAX_JUMPS = maxJumps;
 
     this.probe = probe;
     this.dequeueProbe = dequeueProbe;
@@ -44,11 +45,7 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
       }
 
       if (next == null && !deleted) {
-
-        probe.beforeOrdinaryLink(obsrvdTail, node);
-
         if (obsrvdTail.next.compareAndSet(null, node, false, false)) {
-          probe.afterOrdinaryLink(obsrvdTail, node);
           tail.compareAndSet(obsrvdTail, node);
           return;
         }
@@ -58,10 +55,7 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
         int attempts = 0;
 
         while (!deleted && attempts < MAX_RETRY_ATTEMPTS) {
-
           node.next.set(current, false);
-
-          probe.beforeBasketCas(obsrvdTail, current, node);
 
           if (obsrvdTail.next.compareAndSet(current, node, false, false)) {
             return;
@@ -73,7 +67,6 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
         }
 
         node.next.set(null, false);
-        probe.afterBasketRetryExhausted(node);
         continue;
       }
 
@@ -141,11 +134,9 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
           // candidate is the first live node
           // try to mark current.next
           if (current.next.compareAndSet(candidate, candidate, false, true)) {
-
-            dequeueProbe.afterMarkCas(current, candidate);
-
             // clean when jumps reaches MAX_JUMPS
             if (jumps >= MAX_JUMPS) {
+              dequeueProbe.beforeHeadCleanup(obsrvdHead, candidate);
               head.compareAndSet(obsrvdHead, candidate);
             }
 
@@ -223,6 +214,11 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
     default void afterMarkCas(
         BasketsQueue.Node<T> current,
         BasketsQueue.Node<T> candidate) {
+    }
+
+    default void beforeHeadCleanup(
+        BasketsQueue.Node<T> observedHead,
+        BasketsQueue.Node<T> cleanupTarget) {
     }
   }
 }
