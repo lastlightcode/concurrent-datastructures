@@ -12,7 +12,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
-import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -944,34 +943,6 @@ class BasketsQueueTest {
     assertPhysicalChainIsAcyclic(queue);
   }
 
-  private static <T> void assertPhysicalChainIsAcyclic(BasketsQueue<T> queue) {
-
-    Set<BasketsQueue.Node<T>> visited =
-        Collections.newSetFromMap(new IdentityHashMap<>());
-
-    var current = queue.headNode();
-
-    int traversed = 0;
-
-    while (current != null) {
-
-      int finalTraversed = traversed;
-      assertTrue(
-          visited.add(current),
-          () -> "Cycle detected after traversing "
-              + finalTraversed
-              + " nodes"
-      );
-
-      current = current.next.getReference();
-      traversed++;
-
-      assertTrue(
-          traversed < 1_000_000,
-          "Physical chain traversal appears not to terminate"
-      );
-    }
-  }
 
   @ParameterizedTest
   @ValueSource(ints = {0, 1, 2, 4, 8, 16, 32})
@@ -1134,6 +1105,234 @@ class BasketsQueueTest {
      * opportunistically advance head to the last dead node.
      */
     assertNull(queue.dequeue());
+  }
+
+  @Test
+  void quiescentStructureRemainsSaneAfterHeavyMixedConcurrency() throws Exception {
+    int producers = 8;
+    int consumers = 8;
+    int valuesPerProducer = 10_000;
+
+    int expectedTotal = producers * valuesPerProducer;
+
+    var queue = new BasketsQueue<Integer>(
+        4,      // MAX_RETRY_ATTEMPTS
+        16,     // MAX_JUMPS
+        new EnqueueProbe<>() {},
+        new DequeueProbe<>() {}
+    );
+
+    var start = new CountDownLatch(1);
+
+    var producedDone = new CountDownLatch(producers);
+
+    var consumed = ConcurrentHashMap.<Integer>newKeySet();
+    var duplicateDetected = new AtomicBoolean(false);
+
+    var producerThreads = new ArrayList<Thread>();
+    var consumerThreads = new ArrayList<Thread>();
+
+    for (int producer = 0; producer < producers; producer++) {
+      int producerId = producer;
+
+      producerThreads.add(
+          Thread.ofPlatform().start(() -> {
+            await(start);
+
+            int base = producerId * valuesPerProducer;
+
+            for (int i = 0; i < valuesPerProducer; i++) {
+              queue.enqueue(base + i);
+            }
+
+            producedDone.countDown();
+          })
+      );
+    }
+
+    for (int i = 0; i < consumers; i++) {
+      consumerThreads.add(
+          Thread.ofPlatform().start(() -> {
+            await(start);
+
+            while (true) {
+              Integer value = queue.dequeue();
+
+              if (value != null) {
+                if (!consumed.add(value)) {
+                  duplicateDetected.set(true);
+                }
+
+                continue;
+              }
+
+              /*
+               * Empty right now does not necessarily mean
+               * producers are finished.
+               */
+              if (producedDone.getCount() == 0) {
+                return;
+              }
+
+              Thread.onSpinWait();
+            }
+          })
+      );
+    }
+
+    start.countDown();
+
+    for (var thread : producerThreads) {
+      thread.join();
+    }
+
+    for (var thread : consumerThreads) {
+      thread.join();
+    }
+
+    /*
+     * Consumers may all have observed an empty moment just after
+     * producers finished while some logically live values remain.
+     *
+     * Drain anything left in the quiescent phase.
+     */
+    Integer value;
+
+    while ((value = queue.dequeue()) != null) {
+      if (!consumed.add(value)) {
+        duplicateDetected.set(true);
+      }
+    }
+
+    assertFalse(
+        duplicateDetected.get(),
+        "No value should ever be dequeued more than once"
+    );
+
+    assertEquals(
+        expectedTotal,
+        consumed.size(),
+        "Every produced value should eventually be accounted for"
+    );
+
+    for (int i = 0; i < expectedTotal; i++) {
+      int finalI = i;
+      assertTrue(
+          consumed.contains(i),
+          () -> "Missing value: " + finalI
+      );
+    }
+
+    /*
+     * Whole-structure checks begin here.
+     */
+    assertPhysicalChainIsAcyclic(queue);
+
+    assertTailIsAtPhysicalEnd(queue);
+
+    assertAllReachableValueNodesAreLogicallyDeleted(queue);
+
+    /*
+     * Logical emptiness should now agree with repeated dequeue.
+     */
+    assertNull(queue.dequeue());
+    assertNull(queue.dequeue());
+
+    /*
+     * Queue must still be reusable after all that contention
+     * and cleanup.
+     */
+    queue.enqueue(Integer.MAX_VALUE);
+
+    assertEquals(
+        Integer.MAX_VALUE,
+        queue.dequeue()
+    );
+
+    assertNull(queue.dequeue());
+
+    assertPhysicalChainIsAcyclic(queue);
+    assertTailIsAtPhysicalEnd(queue);
+  }
+
+  private static <T> void assertPhysicalChainIsAcyclic(BasketsQueue<T> queue) {
+
+    Set<BasketsQueue.Node<T>> visited =
+        Collections.newSetFromMap(new IdentityHashMap<>());
+
+    var current = queue.headNode();
+
+    int traversed = 0;
+
+    while (current != null) {
+
+      int finalTraversed = traversed;
+      assertTrue(
+          visited.add(current),
+          () -> "Cycle detected after traversing "
+              + finalTraversed
+              + " nodes"
+      );
+
+      current = current.next.getReference();
+      traversed++;
+
+      assertTrue(
+          traversed < 1_000_000,
+          "Physical chain traversal appears not to terminate"
+      );
+    }
+  }
+
+  private static <T> void assertAllReachableValueNodesAreLogicallyDeleted(BasketsQueue<T> queue) {
+
+    /*
+     * There isn't actually a physical "before head" path we can walk,
+     * because once head advances, those nodes are intentionally
+     * unreachable from head.
+     *
+     * So the property we can inspect from the current head is:
+     *
+     * any nodes skipped by head advancement must already have been
+     * logically deleted.
+     *
+     * The stronger proof of that came from our deterministic
+     * head-cleanup tests.
+     *
+     * Here, in the quiescent state, simply verify that everything
+     * still reachable is logically empty.
+     */
+
+    var current = queue.headNode();
+    boolean[] markHolder = new boolean[1];
+
+    while (true) {
+      var candidate = current.next.get(markHolder);
+
+      if (candidate == null) {
+        return;
+      }
+
+      assertTrue(
+          markHolder[0],
+          "After full drain, every reachable value node should be marked dead"
+      );
+
+      current = candidate;
+    }
+  }
+
+  private static <T> void assertTailIsAtPhysicalEnd(
+      BasketsQueue<T> queue) {
+
+    var tail = queue.tailNode();
+
+    assertNotNull(tail);
+
+    assertNull(
+        tail.next.getReference(),
+        "In a quiescent queue, tail should point at physical end"
+    );
   }
 
   private static void await(CountDownLatch latch) {
