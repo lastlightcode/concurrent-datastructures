@@ -19,7 +19,7 @@ class BasketsQueueTest {
 
   @Test
   void singleProducerEnqueuesAllElements() {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     queue.enqueue(1);
     queue.enqueue(2);
@@ -36,7 +36,7 @@ class BasketsQueueTest {
     int producers = 8;
     int elementsPerProducer = 10_000;
 
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     try (var executor = Executors.newFixedThreadPool(producers)) {
       var start = new CountDownLatch(1);
@@ -68,14 +68,14 @@ class BasketsQueueTest {
 
   @Test
   void emptyQueueReturnsNull() {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     assertNull(queue.dequeue());
   }
 
   @Test
   void singleElementCanBeDequeued() {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     queue.enqueue(42);
 
@@ -85,7 +85,7 @@ class BasketsQueueTest {
 
   @Test
   void preservesFifoForSequentialOperations() {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     queue.enqueue(1);
     queue.enqueue(2);
@@ -99,7 +99,7 @@ class BasketsQueueTest {
 
   @Test
   void canReuseQueueAfterBecomingEmpty() {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     queue.enqueue(1);
     assertEquals(1, queue.dequeue());
@@ -112,7 +112,7 @@ class BasketsQueueTest {
 
   @Test
   void twoConsumersDoNotReturnSameElement() throws Exception {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     queue.enqueue(1);
     queue.enqueue(2);
@@ -152,7 +152,7 @@ class BasketsQueueTest {
 
   @Test
   void repeatedDequeuesCanTraverseDeletedPrefix() {
-    var queue = new BasketsQueue<Integer>(16);
+    var queue = new BasketsQueue<Integer>(16, 16);
 
     for (int i = 0; i < 100; i++) {
       queue.enqueue(i);
@@ -168,7 +168,7 @@ class BasketsQueueTest {
 
   @Test
   void smallCleanupThresholdDoesNotLoseElements() {
-    var queue = new BasketsQueue<Integer>(2);
+    var queue = new BasketsQueue<Integer>(2, 16);
 
     queue.enqueue(1);
     queue.enqueue(2);
@@ -187,7 +187,7 @@ class BasketsQueueTest {
 
   @Test
   void enqueueAfterSeveralDequeuesRemainsReachable() {
-    var queue = new BasketsQueue<Integer>(2);
+    var queue = new BasketsQueue<Integer>(2, 16);
 
     queue.enqueue(1);
     queue.enqueue(2);
@@ -208,7 +208,7 @@ class BasketsQueueTest {
 
   @Test
   void concurrentProducerAndConsumerDoNotLoseElements() throws Exception {
-    var queue = new BasketsQueue<Integer>(4);
+    var queue = new BasketsQueue<Integer>(4, 16);
 
     int count = 10_000;
 

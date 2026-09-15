@@ -3,7 +3,7 @@ package org.dips.datastructure.queue;
 import java.util.concurrent.atomic.AtomicMarkableReference;
 import java.util.concurrent.atomic.AtomicReference;
 
-public final class BasketsQueue<T> implements ConcurrentQueue<T> {
+public final class BasketsQueueSlackTail<T> implements ConcurrentQueue<T> {
 
   private final int MAX_RETRY_ATTEMPTS;
   private final int MAX_JUMPS;
@@ -11,7 +11,7 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
   private final AtomicReference<Node<T>> head;
   private final AtomicReference<Node<T>> tail;
 
-  public BasketsQueue(int maxRetryAttempts, int maxJumps) {
+  public BasketsQueueSlackTail(int maxRetryAttempts, int maxJumps) {
     Node<T> node = new Node<>();
     head = new AtomicReference<>(node);
     tail = new AtomicReference<>(node);
@@ -23,50 +23,81 @@ public final class BasketsQueue<T> implements ConcurrentQueue<T> {
     Node<T> node = new Node<>(elem);
     boolean[] markHolder = new boolean[1];
 
+    retry:
     while (true) {
-      Node<T> obsrvdTail = tail.get();
-      Node<T> next = obsrvdTail.next.get(markHolder);
-      boolean deleted = markHolder[0];
 
-      if (obsrvdTail != tail.get()) {
-        continue;
-      }
+      Node<T> observedTail = tail.get();
+      Node<T> candidate = observedTail;
 
-      if (next == null && !deleted) {
-        if (obsrvdTail.next.compareAndSet(null, node, false, false)) {
-          tail.compareAndSet(obsrvdTail, node);
+      while (true) {
+
+        Node<T> next = candidate.next.get(markHolder);
+        boolean deleted = markHolder[0];
+
+        if (observedTail != tail.get()) {
+          continue retry;
+        }
+
+        if (next != null) {
+          candidate = next;
+          continue;
+        }
+
+        if (deleted) {
+          continue retry;
+        }
+
+        /*
+         * candidate is our observed physical end.
+         */
+        if (candidate.next.compareAndSet(
+            null, node,
+            false, false)) {
+
+          /*
+           * Don't update tail when we appended directly
+           * after the tail we started from.
+           *
+           * Let it acquire some slack.
+           */
+          if (candidate != observedTail) {
+            tail.compareAndSet(observedTail, node);
+          }
+
           return;
         }
 
-        Node<T> current = obsrvdTail.next.get(markHolder);
+        /*
+         * Someone beat us at exactly this insertion point.
+         *
+         * Now try joining their basket.
+         */
+        Node<T> current =
+            candidate.next.get(markHolder);
+
         deleted = markHolder[0];
         int attempts = 0;
 
-        while (!deleted && attempts < MAX_RETRY_ATTEMPTS) {
+        while (!deleted &&
+            attempts < MAX_RETRY_ATTEMPTS) {
 
           node.next.set(current, false);
 
-          if (obsrvdTail.next.compareAndSet(current, node, false, false)) {
+          if (candidate.next.compareAndSet(
+              current, node,
+              false, false)) {
             return;
           }
 
-          current = obsrvdTail.next.get(markHolder);
+          current =
+              candidate.next.get(markHolder);
+
           deleted = markHolder[0];
           attempts++;
         }
 
         node.next.set(null, false);
-        continue;
-      }
-
-      if (next != null) {
-        var candidate = next;
-
-        while (candidate.next.getReference() != null && tail.get() == obsrvdTail) {
-          candidate = candidate.next.getReference();
-        }
-
-        tail.compareAndSet(obsrvdTail, candidate);
+        continue retry;
       }
     }
   }

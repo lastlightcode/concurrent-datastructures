@@ -1,6 +1,5 @@
 package org.dips.datastructure.queue;
 
-import java.util.NoSuchElementException;
 import java.util.concurrent.locks.ReentrantLock;
 
 public final class LockedQueue<T> implements ConcurrentQueue<T> {
