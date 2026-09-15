@@ -50,9 +50,7 @@ public final class BasketsQueueSlackTail<T> implements ConcurrentQueue<T> {
         /*
          * candidate is our observed physical end.
          */
-        if (candidate.next.compareAndSet(
-            null, node,
-            false, false)) {
+        if (candidate.next.compareAndSet(null, node, false, false)) {
 
           /*
            * Don't update tail when we appended directly
@@ -72,25 +70,20 @@ public final class BasketsQueueSlackTail<T> implements ConcurrentQueue<T> {
          *
          * Now try joining their basket.
          */
-        Node<T> current =
-            candidate.next.get(markHolder);
+        Node<T> current = candidate.next.get(markHolder);
 
         deleted = markHolder[0];
         int attempts = 0;
 
-        while (!deleted &&
-            attempts < MAX_RETRY_ATTEMPTS) {
+        while (!deleted && attempts < MAX_RETRY_ATTEMPTS) {
 
           node.next.set(current, false);
 
-          if (candidate.next.compareAndSet(
-              current, node,
-              false, false)) {
+          if (candidate.next.compareAndSet(current, node, false, false)) {
             return;
           }
 
-          current =
-              candidate.next.get(markHolder);
+          current = candidate.next.get(markHolder);
 
           deleted = markHolder[0];
           attempts++;
